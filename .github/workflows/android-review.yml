@@ -1,0 +1,23 @@
+name: Open Android draft PR
+on:
+  push:
+    branches: ['android/native-mileage-v1']
+    paths: ['.github/workflows/android-review.yml', '.github/android-pr.md']
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create draft only when no PR exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "Draft or open PR already exists: #$existing" >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --draft --base main --head "$GITHUB_REF_NAME" --title 'Android：原界面 GPS 临时里程与真实 ODO 校准' --body-file .github/android-pr.md | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
