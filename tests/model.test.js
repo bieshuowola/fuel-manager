@@ -41,4 +41,14 @@ c=setup([init(26000),fill(26100,6,false,'money','online'),fill(26250,6,true)]);
 assert.equal(c.cycles.length,1);assert.equal(c.cycles[0].valid,false);assert.equal(c.learning.count,0);
 c=setup([init(26000),fill(26100,10,true)]);assert.equal(c.learning.count,1);assert(c.learning.safe>=10.75-1e-9,'Aggressive consumption should force safety up');
 c=setup([init(26000),fill(26020,4),fill(26100,8.0,true)]);assert.equal(c.learning.count,1);close(c.cycles[0].rate,12); // physical upper bound
-console.log('PASS: full-fill sums, safety exhaustion classification, high-consumption response, recovery hysteresis, monetary uncertainty, legacy data compatibility');
+// Adaptive-model checks: prediction error, support, and time since calibration.
+let changed=setup([init(26000),fill(26100,3.8,true),fill(26200,7.0,true)]);
+assert(changed.learning.predictionBias>0,'Higher consumption should register positive prediction bias');
+assert(changed.learning.biasPenalty>=0,'Safety bias penalty cannot be negative');
+assert(changed.learning.sampleSupport>0&&changed.learning.sampleSupport<1,'Two samples must not yield full confidence');
+const calibrated=setup([init(26000)]);
+const longer=setup([init(26000),ride(26280)]);
+assert.equal(longer.sinceCalibrationKm,280,'Track distance since last full tank');
+assert(longer.effectiveSafe>calibrated.effectiveSafe,'Long calibration gaps tighten range');
+assert(longer.safeKm>=0,'Safe range nonnegative');
+console.log('PASS: weighted model, high fuel use, monetary uncertainty, prediction error, sample support, distance penalty');
