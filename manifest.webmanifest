@@ -1,0 +1,1 @@
+{"name":"燃油与续航管理工具","short_name":"燃油管家","description":"离线记录加油，估算燃油与保守续航","start_url":"./","scope":"./","display":"standalone","background_color":"#f7f8fa","theme_color":"#f7f8fa","lang":"zh-CN","icons":[{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}
