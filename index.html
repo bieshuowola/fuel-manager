@@ -65,8 +65,11 @@ function priceInfo(){
  const d=Date.parse((checked||'')+'T00:00:00+08:00');
  const age=Number.isFinite(d)?(Date.now()-d)/86400000:Infinity;
  const old=age>3||age < -2;
- const label=`${priceState==='offline'?'缓存参考价':'官方参考价'} · ${notice||'公告日期未知'}公告 · ${checked||asof||'未知'}核对${old?' · 更新已过期':''}`;
- return {price:val,source:old?'stale':priceState,label};
+ const day=Date.parse((notice||'')+'T00:00:00+08:00');
+ const noticeAge=Number.isFinite(day)?(Date.now()-day)/86400000:Infinity;
+ const outdated=old||noticeAge>21||noticeAge < -2;
+ const label=`${priceState==='offline'?'缓存参考价':'油价数据参考'} · ${notice||'公告日期未知'}公告 · ${checked||asof||'未知'}核对${outdated?' · 公告较久，请核对加油站单价':''}`;
+ return {price:val,source:outdated?'stale':priceState,label};
 }
 async function updatePrice(){
  try{
@@ -85,7 +88,7 @@ async function updatePrice(){
 function updatePriceInputs(){
  const input=$('price'),hint=$('priceHint');if(!input||!hint||!$('overlay').classList.contains('visible'))return;
  const info=priceInfo();
- if(input.dataset.manual!=='1' && info.price!=null && info.source!=='stale')input.value=fmt(info.price,2);
+ if(input.dataset.manual!=='1' && info.price!=null)input.value=fmt(info.price,2);
  hint.textContent=info.label+(info.source==='online'?' · 仅供金额换算，油站优惠请修改单价':' · 请核对实际成交价');
  input.dispatchEvent(new Event('input'));
 }
@@ -129,6 +132,8 @@ function save(){if(!storageOK)return false;try{localStorage.setItem(KEY,JSON.str
 // Exact full-to-full method: all fuel purchased after an initial full tank,
 // including intermediate partial fills and the ending full fill, divided by distance.
 // A prior full fill without measured liters creates a fresh anchor, not a valid sample.
+// Sum every partial fill plus the ending full fill, excluding estimated-volume intervals.
+// A 80 km minimum prevents filling-height and dispenser rounding error from dominating.
 function fullTankCycles(events){
  const periods=[];let anchor=null,liters=0,partials=0,estimated=false;
  for(const e of events){
@@ -142,74 +147,100 @@ function fullTankCycles(events){
    const distance=e.odometer-anchor.odometer;
    const total=e.liters==null?NaN:liters+e.liters;
    const rate=distance>0?total/distance*100:NaN;
-   const complete=positive(e.liters)&&!estimated;
-   const valid=complete&&distance>=80&&total>=2&&rate>=2&&rate<=9;
-   periods.push({start:anchor.odometer,end:e.odometer,at:e.at,distance,liters:total,rate,partials,complete,valid,estimated,reason:!complete?'缺少实际升数或使用金额估算':distance<80?'里程过短，不纳入动态平均':!(rate>=2&&rate<=9)?'油耗明显异常，暂不纳入平均':''});
+   const complete=positive(e.liters)&&!estimated&&e.mode!=='money';
+   // An unusually demanding cycle is still useful evidence, but impossible readings are excluded.
+   const valid=complete&&distance>=80&&total>=2&&rate>=2&&rate<=12;
+   periods.push({start:anchor.odometer,end:e.odometer,at:e.at,distance,liters:total,rate,partials,complete,valid,estimated,reason:!complete?'缺少实际升数或使用金额估算':distance<80?'里程过短，不纳入动态平均':!(rate>=2&&rate<=12)?'实测油耗超出合理范围，建议核对记录':''});
   }
   anchor=e;liters=0;partials=0;estimated=false;
  }
  return periods;
 }
+// Adaptive model: a weak historical prior, capped-distance/recent weighting, robust
+// resistance to isolated outliers, and a separate one-sided conservative bound.
+// Safety rises immediately with credible high-consumption evidence but declines slowly.
 function learnedRates(periods,settings){
- const good=periods.filter(p=>p.valid).slice(-6);
- if(!good.length)return {avg:settings.reference,safe:4.5,count:0,good};
- let weightedFuel=0,weightedDistance=0;
- good.forEach((p,i)=>{const w=Math.pow(.82,good.length-i-1);weightedFuel+=p.liters*w;weightedDistance+=p.distance*w});
- const priorDistance=good.length===1?120:good.length===2?60:0;
- const avg=(weightedFuel+settings.reference*priorDistance/100)/(weightedDistance+priorDistance)*100;
- // Fresh peak guards against unexpectedly fuel-intensive riding; smaller guard when recent cycles stabilize.
- const last=good.slice(-Math.min(4,good.length));
- const peak=Math.max(...last.map(p=>p.rate));
- const variance=last.reduce((sum,p)=>sum+(p.rate-avg)**2,0)/last.length;
- const sigma=Math.sqrt(variance);
- const recentPeakGuard=peak*(good.length>=3?1.06:1.08);
- const variabilityGuard=avg+Math.max(.35,1.25*sigma);
- const learningFloor=good.length>=3?avg*1.12:4.5;
- const safe=Math.min(10,Math.max(learningFloor,avg*1.12,recentPeakGuard,variabilityGuard));
- return {avg,safe,count:good.length,good};
+ const accepted=periods.filter(p=>p.valid);
+ const good=accepted.slice(-8);
+ if(!good.length)return {avg:settings.reference,safe:4.5,count:0,good,level:'初始参考',distance:0,variability:0};
+ function estimate(window){
+  const weights=window.map((p,i)=>Math.min(p.distance,350)*Math.pow(.82,window.length-i-1));
+  const ordered=window.map((p,i)=>({rate:p.rate,weight:weights[i]})).sort((a,b)=>a.rate-b.rate);
+  const half=weights.reduce((a,b)=>a+b,0)/2;let running=0,center=ordered.at(-1).rate;
+  for(const o of ordered){running+=o.weight;if(running>=half){center=o.rate;break}}
+  const threshold=Math.max(.8,center*.23);
+  const robust=weights.map((w,i)=>w*Math.max(.42,Math.min(1,threshold/Math.max(.000001,Math.abs(window[i].rate-center)))));
+  let weightedLiters=0,weightedDistance=0;
+  window.forEach((p,i)=>{weightedLiters+=p.rate*robust[i];weightedDistance+=robust[i]});
+  const priorKm=window.length===1?120:window.length===2?55:window.length===3?20:0;
+  const avg=(weightedLiters+settings.reference*priorKm)/(weightedDistance+priorKm);
+  const recent=window.slice(-Math.min(4,window.length));
+  const high=Math.max(...recent.map(p=>p.rate));
+  const sigma=Math.sqrt(recent.reduce((acc,p)=>acc+(p.rate-avg)**2,0)/recent.length);
+  // The default 4.5 is retained until several independent full-fill periods corroborate a lower bound.
+  const baseline=window.length<3||window.reduce((n,p)=>n+p.distance,0)<600?4.5:0;
+  const safe=Math.min(14,Math.max(baseline,avg*1.12,avg+Math.max(.48,1.4*sigma),high*1.075));
+  return {avg,safe,sigma};
+ }
+ // Iteration makes downwards safety-rate hysteresis deterministic for every saved history.
+ let previousSafe=4.5,profile=null;
+ for(let i=1;i<=accepted.length;i++){
+  profile=estimate(accepted.slice(Math.max(0,i-8),i));
+  previousSafe=Math.max(profile.safe,previousSafe-.3);
+ }
+ const distance=good.reduce((n,p)=>n+p.distance,0);
+ const level=good.length>=4&&distance>=900?'样本较充分':good.length>=2&&distance>=350?'正在稳定学习':'样本较少';
+ return {avg:profile.avg,safe:previousSafe,count:good.length,good,level,distance,variability:profile.sigma};
 }
 function replay(){
  let remaining=NaN,safetyRemaining=NaN,odo=NaN,lastAt=null,uncertain=false,lastFill=null,lastFuelEvent=null,overflow=false,underflow=false;
  const s=data.settings,decorated=[],cycles=fullTankCycles(data.events);
- // Apply only calibrations that precede the current event, so old records do not use future knowledge.
- let completed=[];let nextCycle=0;let rates=learnedRates(completed,s);
+ // Rates are updated only after a finished full-fill interval. Earlier segments
+ // retain the rate known when they occurred; later learning never rewrites them.
+ let completed=[],nextCycle=0,rates=learnedRates(completed,s),estimatedVolumeCount=0;
  for(const e of data.events){
   if(e.kind==='init'){
-   remaining=s.capacity;safetyRemaining=s.capacity;odo=e.odometer;lastAt=e.at;lastFill=e.odometer;uncertain=false;
+   remaining=s.capacity;safetyRemaining=s.capacity;odo=e.odometer;lastAt=e.at;lastFill=e.odometer;uncertain=false;estimatedVolumeCount=0;
    decorated.push({...e,distance:0,used:0,before:remaining,after:remaining,uncertain:false});continue;
   }
   const distance=e.odometer-odo;
   const used=distance*rates.avg/100;
   const usedSafe=distance*rates.safe/100;
   const raw=remaining-used,rawSafe=safetyRemaining-usedSafe;
-  const before=Math.max(0,raw);const beforeSafe=Math.max(0,rawSafe);
-  if(raw<-.00001||rawSafe<-.00001){underflow=true;uncertain=true}
+  const before=Math.max(0,raw),beforeSafe=Math.max(0,rawSafe);
+  // A conservative reserve reaching zero is a warning, not evidence of missing data.
+  if(raw<-.00001){underflow=true;uncertain=true}
   let after=before,afterSafe=beforeSafe;
   if(e.kind==='refuel'){
    lastFuelEvent=e;
    if(e.full){
-    after=s.capacity;afterSafe=s.capacity;uncertain=false;lastFill=e.odometer;
+    after=s.capacity;afterSafe=s.capacity;uncertain=false;lastFill=e.odometer;estimatedVolumeCount=0;
    }else{
-    after=before+e.liters;afterSafe=beforeSafe+e.liters;
-    if(after>s.capacity+.05){overflow=true;uncertain=true;after=Math.min(s.capacity,after)}
-    else after=Math.min(s.capacity,after);
-    if(afterSafe>s.capacity+.05){overflow=true;uncertain=true;afterSafe=Math.min(s.capacity,afterSafe)}
-    else afterSafe=Math.min(s.capacity,afterSafe);
+    after=before+e.liters;
+    // Paid-amount calculations are approximate, especially with unknown station discounts.
+    // Keep the nominal litres visible, but only credit the conservative ledger partially.
+    const uncertainty=e.mode==='money'?(e.priceOrigin==='actual'?.02:e.priceOrigin==='online'?.07:.12):0;
+    if(uncertainty>0)estimatedVolumeCount++;
+    afterSafe=beforeSafe+e.liters*(1-uncertainty);
+    if(after>s.capacity+.05){overflow=true;uncertain=true}
+    after=Math.min(s.capacity,after);
+    // The safety ledger being above rated capacity does not mean bad user data.
+    afterSafe=Math.min(s.capacity,afterSafe);
    }
   }
   decorated.push({...e,distance,used,before,after,uncertain});
   odo=e.odometer;remaining=after;safetyRemaining=afterSafe;lastAt=e.at;
   if(e.kind==='refuel'&&e.full){
-   if(nextCycle<cycles.length){completed.push(cycles[nextCycle]);nextCycle++;}
+   if(nextCycle<cycles.length){completed.push(cycles[nextCycle]);nextCycle++}
    rates=learnedRates(completed,s);
   }
  }
  const ready=data.events.length>0;
- return {ready,remaining,safetyRemaining,odo,lastAt,uncertain,lastFill,lastFuelEvent,decorated,overflow,underflow,cycles,learning:rates,
+ return {ready,remaining,safetyRemaining,odo,lastAt,uncertain,lastFill,lastFuelEvent,decorated,overflow,underflow,cycles,learning:rates,estimatedVolumeCount,
   safeKm:ready?Math.max(0,(safetyRemaining-s.reserve)/rates.safe*100):NaN,
   normalKm:ready?remaining/rates.avg*100:NaN};
 }
-function getAlert(c){if(!c.ready)return{cls:'off',text:'等待校准'};if(c.uncertain)return{cls:'danger',text:'需重新校准'};if(c.remaining<=data.settings.reserve)return{cls:'danger',text:'安全余量耗尽'};if(c.safeKm<=data.settings.alertKm)return{cls:'warn',text:'建议加油'};if(c.safeKm<=data.settings.alertKm+40)return{cls:'warn',text:'留意油量'};return {cls:'',text:'余量充足'}}
+function getAlert(c){if(!c.ready)return{cls:'off',text:'等待校准'};if(c.uncertain)return{cls:'danger',text:'需重新校准'};if(c.safetyRemaining<=data.settings.reserve)return{cls:'danger',text:'建议立即加油'};if(c.safeKm<=data.settings.alertKm)return{cls:'warn',text:'建议加油'};if(c.safeKm<=data.settings.alertKm+40)return{cls:'warn',text:'留意油量'};return {cls:'',text:'余量充足'}}
 function render(){
  const c=replay();calcCache=c;const s=data.settings;const alert=getAlert(c);
  $('statusPill').className=`pill ${alert.cls}`;$('statusPill').textContent=alert.text;
@@ -229,10 +260,10 @@ function render(){
  $('economySafe').innerHTML=`${fmt(c.learning.safe,2)} <small>L/100km</small>`;
  $('economyCount').textContent=`${c.learning.count} 期有效`;
  const recent=c.cycles.at(-1),lastGood=c.learning.good.at(-1);
- $('economyCaption').textContent=c.learning.count?`已用近 ${c.learning.count} 期真实满油数据修正`:'尚无有效满油法样本';
+ $('economyCaption').textContent=c.learning.count?`近 ${c.learning.count} 期 · ${c.learning.level} · ${Math.round(c.learning.distance)} km`:'尚无有效满油法样本 · 先按历史参考值估算';
  $('economyDetail').textContent=recent&&recent.complete?`最新周期：${fmt(recent.distance,0)} km / ${fmt(recent.liters,2)} L，实测 ${fmt(recent.rate,2)} L/100km${recent.valid?'，已纳入加权平均':'，'+recent.reason}。`:(c.learning.count?`上期有效油耗 ${fmt(lastGood.rate,2)} L/100km。每次加满时记下实际升数，可继续提高估算参考价值。`:'首次满箱只需里程；从下一次加满开始，记下加油升数，就能自动校准。');
  let banner='',red=false,title='安全优先的续航估算';
- let advice=`按近期平均 ${fmt(c.learning.avg,2)} L/100km 估算剩余燃油；保守行驶距离独立按 ${fmt(c.learning.safe,2)} L/100km 扣油，另留 ${fmt(s.reserve)} L。数值只对应上次输入的里程。`;
+ let advice=`按近期加权平均 ${fmt(c.learning.avg,2)} L/100km 估算燃油；安全续航按 ${fmt(c.learning.safe,2)} L/100km 独立扣油、预留 ${fmt(s.reserve)} L${c.estimatedVolumeCount?'，并扣除金额补录误差余量':''}。仅对应已输入里程，骑行条件突变仍有风险。`;
  if(!storageOK){banner='当前浏览器无法可靠保存记录。关闭页面后数据可能丢失，请立即通过设置导出备份。';red=true}
  else if(c.ready&&c.uncertain){banner='油量估算曾触底或与加油量冲突，当前结果不可靠。请尽快加满油校准；在此之前不要依赖显示的可骑距离。';red=true;title='估算需要重新校准';advice='请检查是否漏记了加油、里程或升数；加满校准后重新建立基准。'}
  else if(c.ready&&c.safetyRemaining<=s.reserve){banner=`保守估算已经触及 ${fmt(s.reserve)} L 安全线。请尽快安全加油，不要依赖仪表剩余格数。`;red=true;title='尽快补充燃油'}
@@ -245,7 +276,7 @@ function modal(title,body,type){currentSheet=type;$('modalHeading').textContent=
 function close(){currentSheet=null;$('overlay').classList.remove('visible');$('overlay').setAttribute('aria-hidden','true');document.body.classList.remove('modal-open')}
 function field(id,label,value,unit,placeholder='',help=''){return `<div class="field"><label for="${id}">${label}</label><div class="input-wrap"><input id="${id}" type="number" step="any" min="0" inputmode="decimal" value="${value==null?'':escape(value)}" placeholder="${placeholder}" autocomplete="off"><span class="suffix">${unit}</span></div>${help?`<p class="help">${help}</p>`:''}</div>`}
 function error(msg){const n=$('sheetError');if(n){n.textContent=msg;n.classList.toggle('visible',!!msg)}}
-function addEvent(event){data.events.push({kind:event.kind,odometer:event.odometer,at:new Date().toISOString(),...(event.kind==='refuel'?{full:event.full,liters:event.liters??null,mode:event.mode||'liters',money:event.money??null,price:event.price??null}:{})});if(!save()){toast('无法自动保存！请在设置中导出备份。')}render();close();}
+function addEvent(event){data.events.push({kind:event.kind,odometer:event.odometer,at:new Date().toISOString(),...(event.kind==='refuel'?{full:event.full,liters:event.liters??null,mode:event.mode||'liters',money:event.money??null,price:event.price??null,priceOrigin:event.priceOrigin||null}:{})});if(!save()){toast('无法自动保存！请在设置中导出备份。')}render();close();}
 function openMileage(){const c=replay();if(!c.ready)return toast('请先加满油完成初次校准');modal('更新当前里程',`${field('entryOdo','当前仪表总里程',c.odo,'km','',`上次记录 ${c.odo.toLocaleString()} km。请填写现在仪表上显示的总里程。`)}<div class="calc-line"><span>预计本段消耗燃油</span><strong id="mileageUsed">0.00 L</strong></div><div id="sheetError" class="error"></div><button id="saveMileage" class="primary">${icon('check')}保存并更新油量</button>`, 'mileage');const input=$('entryOdo');input.addEventListener('input',()=>{const v=asNum(input.value);$('mileageUsed').textContent=isOdo(v)&&v>=c.odo?`${fmt((v-c.odo)*c.learning.avg/100,2)} L`:'--'});$('saveMileage').onclick=()=>{const odo=asNum(input.value);if(!isOdo(odo)||odo<c.odo)return error('请输入不小于上次记录的有效总里程。');if(odo===c.odo)return error('总里程未变化，无需重复记录。');addEvent({kind:'mileage',odometer:odo});toast('里程已更新，燃油估算已重算')};input.select()}
 function openRefuel(){
  const c=replay();if(!c.ready)return toast('请先加满油完成初次校准');
@@ -279,7 +310,7 @@ function openRefuel(){
  function redrawFields(clear=false){
   const previous=clear?'':($('quantity')?.value??'');
   $('quantityFields').innerHTML=mode==='liters'?field('quantity','本次实际加油升数',previous,'L','例如 3.86','包含加满时最后一次加进去的升数'):
-   field('quantity','本次加油金额',previous,'元','例如 50')+field('price','92号汽油参考单价',priceInfo().source==='stale'?'':(priceInfo().price==null?(data.lastPrice??''):fmt(priceInfo().price,2)),'元/L','例如 8.57','参考价格与加油站优惠价可能不同，知道实际结算单价时请直接修改。')+`<p id="priceHint" class="price-hint">${escape(priceInfo().label)}</p>`;
+   field('quantity','本次加油金额',previous,'元','例如 50')+field('price','92号汽油参考单价',priceInfo().price==null?(data.lastPrice??''):fmt(priceInfo().price,2),'元/L','例如 8.57','参考价格与加油站优惠价可能不同，知道实际结算单价时请直接修改。')+`<p id="priceHint" class="price-hint">${escape(priceInfo().label)}</p>`;
   $('quantityFields').style.display=full&&skip?'none':'block';
   $('switchMode').textContent=mode==='liters'?'忘记加油升数？按金额补录 →':'← 返回按实际升数记录';
   if(mode==='money'){
@@ -303,6 +334,7 @@ function openRefuel(){
    if(mode==='money'){
     money=asNum($('quantity').value);price=asNum($('price').value);
     if(!positive(price))return error('请填写合理的实际油价；无法核对时可使用参考价，但估算误差会增加。');
+    if(priceInfo().source==='stale'&&$('price').dataset.manual!=='1'&&!confirm('油价源的最新官方公告日期较久，实际价格可能不同。确定按页面参考价估算本次加油升数吗？'))return;
    }
   }
   if(!full){
@@ -314,7 +346,7 @@ function openRefuel(){
   if(mode==='money'&&price!=null)data.lastPrice=price;
   data.preferredMode=mode;
   const oldCount=c.learning.count;
-  addEvent({kind:'refuel',odometer:odo,full,liters:full&&skip?null:l,mode,money,price});
+  addEvent({kind:'refuel',odometer:odo,full,liters:full&&skip?null:l,mode,money,price,priceOrigin:mode==='money'?($('price')?.dataset.manual==='1'?'actual':priceInfo().source==='online'?'online':'unverified'):null});
   const updated=replay();
   if(full&&updated.learning.count>oldCount)toast('满油法油耗已更新，安全续航已重新估算');
   else toast(full?'已按满箱校准油量':'已记录加油并更新续航');
@@ -336,7 +368,7 @@ function showHistory(){
 function showEconomy(){
  const c=replay();const periods=c.cycles.slice().reverse();
  const rows=periods.length?periods.map((p,i)=>`<div class="cycle-row"><div><strong>${escape(dateLabel(p.at))} · ${fmt(p.distance,0)} km</strong><small>${Number.isFinite(p.liters)?`${fmt(p.liters,2)} L · `:''}中途补油 ${p.partials} 次<br>${p.valid?'已纳入近期平均':escape(p.reason)}</small></div><div><strong class="cycle-rate">${Number.isFinite(p.rate)?fmt(p.rate,2):'--'} <small>L/100km</small></strong><small>${p.valid?'有效样本':'不参与统计'}</small></div></div>`).join(''):`<p class="empty-area">还没有完成满油到满油的周期。第一次加满后，正常骑行、随意部分加油；下次加满时记录实际升数就能产生第一期样本。</p>`;
- modal('满油法油耗记录',`<div class="settings-card"><h3>近期加权油耗：${fmt(c.learning.avg,2)} L/100km</h3><p>取最近最多 6 期有效满油周期，按里程加权、近期略增权。首次有效周期会适度参考历史 3.92 数据。安全估算独立采用 ${fmt(c.learning.safe,2)} L/100km，结合近期油耗波动自动变化。</p><p>满油法 =（两次加满之间所有部分加油升数 + 最后一次加满的升数）÷ 两次加满之间行驶里程 × 100。要尽量保持每次加满油的液面标准一致。</p></div><div style="margin-top:14px">${rows}</div><p class="help">少于 80km 的周期、缺少升数、金额换算或异常油耗不会参与动态平均。满油法反映的是各周期平均油耗，无法提前准确预测某一次突然出现的激烈骑行或拥堵。</p>`,'economy');
+ modal('满油法油耗记录',`<div class="settings-card"><h3>近期加权油耗：${fmt(c.learning.avg,2)} L/100km</h3><p>使用最近最多 8 期有效满油周期，以里程与新近程度加权，对孤立异常值降权；前几期适度参考历史 3.92 数据。实测油耗升高会立即收紧安全边界，连续低油耗才逐步放宽。安全估算独立采用 ${fmt(c.learning.safe,2)} L/100km，结合近期高值、波动及金额估算误差自动变化。</p><p>满油法 =（两次加满之间所有部分加油升数 + 最后一次加满的升数）÷ 两次加满之间行驶里程 × 100。要尽量保持每次加满油的液面标准一致。</p></div><div style="margin-top:14px">${rows}</div><p class="help">少于 80km 的周期、缺少升数、金额换算或异常油耗不会参与动态平均。满油法反映的是各周期平均油耗，无法提前准确预测某一次突然出现的激烈骑行或拥堵。</p>`,'economy');
 }
 function showSettings(){const s=data.settings;const body=`<div class="settings-card"><h3>车辆与估算参数</h3><p>已确认的历史极限续航：满箱 319 km；参考油耗 3.92 L/100km（以标称 12.5L 推算）。每次完整满油周期会自动测算实际油耗；安全油耗由近期有效数据的水平及波动自动计算，无需手动设置。</p></div><div class="settings-row">${field('setCapacity','油箱参考容量',fmt(s.capacity),'L')}${field('setReserve','安全预留油量',fmt(s.reserve),'L')}${field('setAlert','加油提醒距离',fmt(s.alertKm,0),'km')}</div><div id="sheetError" class="error"></div><button id="saveSettings" class="primary">${icon('check')}保存参数并重算所有记录</button><hr class="tiny-divider"><div class="settings-card"><h3>数据与隐私</h3><div id="storageState" class="storage-badge ${storageOK?'':'bad'}">${icon(storageOK?'check':'alert')}${storageOK?'本机浏览器存储可用 · 完全离线':'本机存储不可用 · 请务必导出备份'}</div><p style="margin-top:8px">记录保存在当前浏览器的本地存储。更换浏览器、清除网站数据或部分文件管理器打开方式可能导致数据丢失，建议定期导出 JSON 备份。</p></div><button id="exportBtn" class="utility"><span>导出全部数据备份</span>${icon('download')}</button><button id="importBtn" class="utility"><span>从 JSON 备份恢复</span>${icon('upload')}</button><button id="resetBtn" class="utility danger-btn"><span>清除全部数据，重新初始化</span>${icon('trash')}</button>`;modal('设置与备份',body,'settings');$('saveSettings').onclick=()=>{const cap=asNum($('setCapacity').value),reserve=asNum($('setReserve').value),alert=asNum($('setAlert').value);const next={...s,capacity:cap,reserve,alertKm:alert};if(!validSettings(next))return error('检查参数：容量 5～30L，预留油量 0.5L 至容量以下，提醒距离 10～200km。');if(cap<reserve+.5)return error('油箱容量必须比安全预留量至少高 0.5L。');data.settings=next;save();render();close();toast('参数已更新，燃油与安全续航已重新计算')};$('exportBtn').onclick=exportBackup;$('importBtn').onclick=()=>{$('fileInput').click()};$('resetBtn').onclick=()=>{if(!confirm('确定清空所有行驶和加油记录吗？建议先导出备份。'))return;if(!confirm('最后确认：清空后必须重新加满油校准才能使用。继续吗？'))return;data=makeEmpty();save();render();close();toast('已清空，请在加满油后重新校准')}}
 function exportBackup(){const backup={...data,exportedAt:new Date().toISOString()};const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json;charset=utf-8'});const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download=`fuel_manager_backup_${new Date().toISOString().slice(0,10)}.json`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),3000);toast('备份文件已生成，请妥善保存')}
