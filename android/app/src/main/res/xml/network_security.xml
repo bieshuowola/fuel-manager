@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- No external server has this disposable CA's private key (discarded at generation).
+         Reject other HTTPS destinations, including bundled OCR SDK diagnostic endpoints.
+         Keep normal certificate/hostname verification for the sole online feature. -->
+    <base-config cleartextTrafficPermitted="false"><trust-anchors><certificates src="@raw/offline_only_ca"/></trust-anchors></base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">bieshuowola.github.io</domain>
+        <trust-anchors><certificates src="system"/></trust-anchors>
+    </domain-config>
+</network-security-config>
