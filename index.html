@@ -253,8 +253,15 @@ function replay(){
   }
  }
  const ready=data.events.length>0;
- return {ready,remaining,safetyRemaining,odo,lastAt,uncertain,lastFill,lastFuelEvent,decorated,overflow,underflow,cycles,learning:rates,estimatedVolumeCount,
-  safeKm:ready?Math.max(0,(safetyRemaining-s.reserve)/rates.safe*100):NaN,
+ const sinceCalibrationKm=ready&&lastFill!=null?Math.max(0,odo-lastFill):0;
+ // Uncalibrated distance is a proxy for compounding forecasting error, not an observed loss of petrol.
+ const calibrationPenalty=sinceCalibrationKm<=220?0:sinceCalibrationKm<=420?(sinceCalibrationKm-220)/200*.18:.18+Math.min(.36,(sinceCalibrationKm-420)/320*.36);
+ // Monetary estimation is already reflected in the conservative litres ledger;
+ // use only a limited additional future-demand margin instead of double-counting volume.
+ const moneyPenalty=Math.min(.12,estimatedVolumeCount*.025);
+ const effectiveSafe=clamp(rates.safe+calibrationPenalty+moneyPenalty,2.5,14);
+ return {ready,remaining,safetyRemaining,odo,lastAt,uncertain,lastFill,lastFuelEvent,decorated,overflow,underflow,cycles,learning:rates,estimatedVolumeCount,sinceCalibrationKm,effectiveSafe,
+  safeKm:ready?Math.max(0,(safetyRemaining-s.reserve)/effectiveSafe*100):NaN,
   normalKm:ready?remaining/rates.avg*100:NaN};
 }
 function getAlert(c){if(!c.ready)return{cls:'off',text:'等待校准'};if(c.uncertain)return{cls:'danger',text:'需重新校准'};if(c.safetyRemaining<=data.settings.reserve)return{cls:'danger',text:'建议立即加油'};if(c.safeKm<=data.settings.alertKm)return{cls:'warn',text:'建议加油'};if(c.safeKm<=data.settings.alertKm+40)return{cls:'warn',text:'留意油量'};return {cls:'',text:'余量充足'}}
