@@ -19,5 +19,6 @@ jobs:
           if [ -n "$existing" ]; then
             echo "Draft or open PR already exists: #$existing" >> "$GITHUB_STEP_SUMMARY"
           else
-            gh pr create --repo "$GITHUB_REPOSITORY" --draft --base main --head "$GITHUB_REF_NAME" --title 'Android：原界面 GPS 临时里程与真实 ODO 校准' --body-file .github/android-pr.md | tee -a "$GITHUB_STEP_SUMMARY"
+            pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base main --head "$GITHUB_REF_NAME" --title 'Android：原界面 GPS 临时里程与真实 ODO 校准' --body-file .github/android-pr.md)
+            printf '%s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
           fi
