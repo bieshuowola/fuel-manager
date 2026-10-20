@@ -10,21 +10,26 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
-      - uses: android-actions/setup-android@v3
+          java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - name: SDK
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        run: |
+          python3 - <<'PYSDK'
+          import os, pathlib, subprocess
+          sdkmanager = pathlib.Path(os.environ['ANDROID_HOME']) / 'cmdline-tools/latest/bin/sdkmanager'
+          subprocess.run([str(sdkmanager), '--licenses'], input='y\n' * 100, text=True, check=True, stdout=subprocess.DEVNULL)
+          subprocess.run([str(sdkmanager), 'platforms;android-36', 'build-tools;36.0.0'], check=True)
+          PYSDK
       - name: Original model and Android projection
         run: node --test tests/model.test.js android/tests/projection.test.cjs
       - name: Kotlin tests, APK and lint
