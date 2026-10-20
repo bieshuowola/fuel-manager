@@ -1,0 +1,44 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const html=fs.readFileSync(require('node:path').join(__dirname,'../index.html'),'utf8');
+const js=html.slice(html.lastIndexOf('<script>')+8,html.lastIndexOf('</script>'));
+const model=js.slice(js.indexOf('const DEFAULT='),js.indexOf('function getAlert('));
+const storage={};const localStorage={getItem:k=>storage[k]||null,setItem:(k,v)=>storage[k]=v,removeItem:k=>delete storage[k]};
+const ctx={localStorage,window:{alert:()=>{}},setTimeout,Date,Number,console};
+vm.runInNewContext(model+'\nglobalThis.__test={makeEmpty,fullTankCycles,learnedRates,replay,setData:d=>data=d};',ctx);
+const t=ctx.__test;
+const at='2026-10-21T00:00:00.000Z';
+const init=odo=>({kind:'init',odometer:odo,at});
+const ride=odo=>({kind:'mileage',odometer:odo,at});
+const fill=(odo,liters,full=false,mode='liters',priceOrigin=null)=>({kind:'refuel',odometer:odo,liters,full,mode,priceOrigin,at});
+const setup=events=>{const d=t.makeEmpty();d.events=events;t.setData(d);return t.replay()};
+const close=(x,y,eps=.00001)=>assert(Math.abs(x-y)<eps,`Expected ${x} ≈ ${y}`);
+let c=setup([init(26000)]);
+assert.equal(c.learning.count,0);close(c.learning.avg,3.92);close(c.learning.safe,4.5);close(c.safeKm,(12.5-2)/4.5*100);
+c=setup([init(26000),ride(26300)]);
+assert.equal(c.uncertain,false,'Safety estimate exhaustion is not a broken-odometer warning');
+assert.equal(c.safetyRemaining,0);assert(c.remaining>0);
+c=setup([init(26000),ride(26340)]);
+assert.equal(c.uncertain,true,'Nominal fuel exhaustion is unreliable');
+let events=[init(26000),fill(26100,3),fill(26250,8.8,true)];
+c=setup(events);assert.equal(c.learning.count,1);close(c.cycles[0].rate,4.72);close(c.remaining,12.5);
+const firstSafety=c.learning.safe;
+events.push(fill(26400,4),fill(26500,10.5,true)); // Full-to-full 250 km at 5.8 L/100 km
+c=setup(events);assert.equal(c.learning.count,2);close(c.cycles[1].rate,5.8);assert(c.learning.avg>4.72);assert(c.learning.safe>=firstSafety);
+const peak=c.learning.safe;
+events.push(fill(26750,7.5,true)); // New 3.0 L/100km, should not instantly erase high-consumption safety
+c=setup(events);assert.equal(c.learning.count,3);assert(c.learning.safe>=peak-.3-1e-8);
+let periods=t.fullTankCycles(events);assert.equal(periods.length,3);
+assert.equal(t.learnedRates(periods,{capacity:12.5,reference:3.92,reserve:2,alertKm:40}).count,3);
+const trusted=setup([init(26000),fill(26200,6,false,'money','online')]);
+const regular=setup([init(26000),fill(26200,6,false,'liters')]);
+close(regular.remaining,trusted.remaining);close(regular.safetyRemaining-trusted.safetyRemaining,.42);
+const actual=setup([init(26000),fill(26200,6,false,'money','actual')]);
+assert(actual.safetyRemaining>trusted.safetyRemaining);
+c=setup([init(26000),fill(26100,6,false,'money','online'),fill(26250,6,true)]);
+assert.equal(c.cycles.length,1);assert.equal(c.cycles[0].valid,false);assert.equal(c.learning.count,0);
+c=setup([init(26000),fill(26100,10,true)]);assert.equal(c.learning.count,1);assert(c.learning.safe>=10.75-1e-9,'Aggressive consumption should force safety up');
+c=setup([init(26000),fill(26020,4),fill(26100,8.0,true)]);assert.equal(c.learning.count,1);close(c.cycles[0].rate,12); // physical upper bound
+console.log('PASS: full-fill sums, safety exhaustion classification, high-consumption response, recovery hysteresis, monetary uncertainty, legacy data compatibility');
