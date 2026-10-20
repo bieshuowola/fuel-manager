@@ -12,7 +12,9 @@ const server=http.createServer((req,res)=>{
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
  try{
- const context=await browser.newContext({viewport:{width:412,height:900}}),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const context=await browser.newContext({viewport:{width:412,height:900}}),page=await context.newPage();
+ async function expectFuel(value){await page.waitForFunction(expected=>document.getElementById('remainingNumber').textContent===expected,value,{timeout:8000})}
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await context.route('https://bieshuowola.github.io/**',r=>r.abort()); // exercise offline oil-price fallback
  await page.exposeFunction('nativeMessage',msg=>{
   const m=JSON.parse(msg);
@@ -24,18 +26,15 @@ const server=http.createServer((req,res)=>{
  page.on('dialog',d=>d.accept());
  await page.goto(`http://127.0.0.1:${server.address().port}/`);
  await page.fill('#initOdo','26000');await page.click('#initBtn');
- await page.waitForTimeout(1100);assert.equal(await page.textContent('#remainingNumber'),'12.5');
+ await expectFuel('12.5');
  const bar=await page.locator('#fuelGauge>span').count();assert.equal(bar,20);
- await page.click('#mileageBtn');await page.fill('#entryOdo','26100');await page.click('#saveMileage');await page.waitForTimeout(1100);
- assert.equal(await page.textContent('#remainingNumber'),'8.6');
+ await page.click('#mileageBtn');await page.fill('#entryOdo','26100');await page.click('#saveMileage');await expectFuel('8.6');
  await page.click('#refuelBtn');await page.fill('#quantity','2');await page.click('#saveRefuel');
- await page.waitForTimeout(1100);assert.equal(await page.textContent('#remainingNumber'),'10.6');
+ await expectFuel('10.6');
  // Adding GPS changes the original animated display, not the saved ledger.
- state={...state,km:20};await page.evaluate(s=>window.androidReceive(s),state);await page.waitForTimeout(1100);
- assert.equal(await page.textContent('#remainingNumber'),'9.8');assert.equal(fuel.events.length,3);
+ state={...state,km:20};await page.evaluate(s=>window.androidReceive(s),state);await expectFuel('9.8');assert.equal(fuel.events.length,3);
  // Full fill at real ODO reconciles transient consumption; learning uses only confirmed ODO.
- state.km=0;await page.click('#refuelBtn');await page.fill('#entryOdo','26250');await page.fill('#quantity','8');await page.click('#fullToggle');await page.click('#saveRefuel');await page.waitForTimeout(1100);
- assert.equal(await page.textContent('#remainingNumber'),'12.5');
+ state.km=0;await page.click('#refuelBtn');await page.fill('#entryOdo','26250');await page.fill('#quantity','8');await page.click('#fullToggle');await page.click('#saveRefuel');await expectFuel('12.5');
  await page.click('#refuelBtn');await page.fill('#entryOdo','26270');await page.click('#switchMode');await page.fill('#quantity','40');await page.fill('#price','8');await page.click('#saveRefuel');await page.waitForTimeout(1100);
  // Over-capacity partial fill is flagged as unreliable by the original model.
  assert.ok((await page.textContent('#statusPill')).includes('校准'));

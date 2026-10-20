@@ -27,6 +27,7 @@ class MainActivity:Activity(){
     override fun onCreate(savedInstanceState:Bundle?){
         super.onCreate(savedInstanceState);activityRef=java.lang.ref.WeakReference(this);repo=LocalRepository.get(this)
         if(LocationTrackingService.live==null)repo.recover("process_interruption")
+        RideControl.publish(this)
         web=WebView(this)
         val container=FrameLayout(this).apply{setBackgroundColor(Color.rgb(247,248,250));addView(web)}
         container.setOnApplyWindowInsetsListener{v,insets->
@@ -110,7 +111,7 @@ class MainActivity:Activity(){
             }.show()
     }
     private fun controls(){
-        val actions=arrayOf("记录本次摩托车骑行","暂存待确认行程","确认待处理行程","结束当前记录","ODO 校准 / 拍照","开启车辆活动提示","关闭自动识别及定位","导出合并备份","导入网页 / 合并备份","运行状态与系统设置","恢复本机安全副本")
+        val actions=arrayOf("记录本次摩托车骑行","暂存待确认行程","确认待处理行程","结束当前记录","ODO 校准 / 拍照","开启车辆活动提示","关闭自动识别及定位","导出合并备份","导入网页 / 合并备份","运行状态与系统设置","恢复本机安全副本","添加骑行快捷开关")
         AlertDialog.Builder(this).setTitle("骑行与校准").setItems(actions){_,i->when(i){
             0->startRecording(true)
             1->startRecording(false)
@@ -139,6 +140,7 @@ class MainActivity:Activity(){
                     try{val snapshot=JSONObject(files[n].readText());confirmRestore(snapshot.getJSONObject("fuel"),snapshot)}catch(e:Exception){tell("副本无效，未恢复")}
                 }.show()
             }
+            11->RideTileService.requestAdd(this)
             else->Unit
         }}.setNegativeButton("关闭",null).show()
     }

@@ -78,6 +78,10 @@ class TrackingCoreTest {
         assertEquals(TripState.RECORDING,d.observe(63000,12.0,4.0))
         assertEquals(TripState.ENDED,d.observe(663000,0.0,0.0))
     }
+    @Test fun slowCredibleProgressCannotBeMistakenForTenMinuteParking(){
+        val d=TripDetector();d.start(true,0)
+        for(i in 1..30)assertEquals(TripState.RECORDING,d.observe(i*32000L,16.0,0.5))
+    }
     @Test fun vehicleClassificationNeverConfirmsMotorcycle(){
         val d=TripDetector();d.start(false,0)
         d.observe(3000,24.0,8.0);d.observe(12000,72.0,8.0)

@@ -31,7 +31,7 @@ class LocalRepository internal constructor(context:Context) {
         dir.listFiles()?.sortedByDescending{it.lastModified()}?.drop(10)?.forEach{it.delete()}
     }
     fun recover(reason:String) {
-        if(state.optBoolean("active")){state.put("active",false);state.put("unknown",true);state.put("status",TripState.NEEDS_ODO.name);state.put("reason",reason);commit()}
+        if(state.optBoolean("active")){stop(interrupted=true);state.put("status",TripState.NEEDS_ODO.name);state.put("reason",reason);commit()}
     }
     fun start(confirmed:Boolean) {
         state.put("active",true).put("acquiring",true).put("confirmed",confirmed).put("status",if(confirmed)"RECORDING" else "SUSPECTED")

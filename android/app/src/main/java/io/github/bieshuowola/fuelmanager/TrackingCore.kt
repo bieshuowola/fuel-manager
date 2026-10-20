@@ -57,7 +57,8 @@ class TripDetector {
     private var observations=0
     fun start(confirmed:Boolean, now:Long) { state=if(confirmed) TripState.RECORDING else TripState.SUSPECTED;lastMotion=now;firstMotion=now;observations=0 }
     fun observe(now:Long, metres:Double, speed:Double?) : TripState {
-        if(metres>2.5 && (speed==null || speed>0.65)) {
+        // Positive filtered distance is motion even in a crawling traffic queue.
+        if(metres>2.5) {
             if(observations==0)firstMotion=now
             observations++;lastMotion=now
             if(state==TripState.SUSPECTED && observations>=3 && now-firstMotion>=15000)state=TripState.AWAITING_CONFIRMATION

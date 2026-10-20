@@ -1,4 +1,4 @@
-# Fuel Manager Android 0.1.0
+# Fuel Manager Android 0.2.0
 
 独立 Android 工程，不改动仓库根目录网站。包名 `io.github.bieshuowola.fuelmanager`，minSdk 26，target/compileSdk 36。使用 WebViewAssetLoader 打包原页面离线资源，原油耗模型、CSS、备份版本和键 `nk250_fuel_manager_v1` 保留；生成的专用适配层只在 APK 内生效。
 
@@ -40,5 +40,7 @@ GitHub Actions 的 `Android Debug APK` 在 `android/**` 分支推送、PR 或手
 ## 测试签名与升级
 
 `android/debug/fuel-manager-debug.p12` 是专用公开测试密钥，口令 `android`，仅签 Debug，便于不同机器和 Actions 生成可覆盖安装的初版。证书 SHA256：`57ccef10981c04fd8e1179be5e551d0f013a59874188cdf610dce03a5d9c5b9f`。这不是个人签名，也不应用于生产发布；任何人可用此公开调试密钥签包，因此只安装自己核验来源和 SHA256 的测试构建。后续覆盖安装保持包名/签名一致并递增 versionCode；更换正式签名须另行规划迁移。卸载/清除数据前必须导出备份。
+
+新增 [「骑行」系统快捷开关](RIDE_TILE.md)：主动开启后记录本车，实际订阅后高亮，再次点击结束。首次授权后通过短暂原生启动入口开启，不加载主页。
 
 详见 [架构](ARCHITECTURE.md) 和 [vivo X100 / Android 16 验收步骤](DEVICE_ACCEPTANCE.md)。

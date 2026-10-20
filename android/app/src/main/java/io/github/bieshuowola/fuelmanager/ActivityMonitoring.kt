@@ -72,6 +72,7 @@ class RecoveryReceiver:BroadcastReceiver(){
         if(intent.action!=Intent.ACTION_BOOT_COMPLETED && intent.action!=Intent.ACTION_MY_PACKAGE_REPLACED)return
         val repo=LocalRepository.get(context)
         repo.recover("boot_or_upgrade")
+        RideControl.cancel(context)
         if(repo.state.optBoolean("monitoring")){
             repo.state.put("unknown",true);repo.commit()
             ActivityMonitoring.enable(context){}

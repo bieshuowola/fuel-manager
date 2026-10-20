@@ -12,6 +12,10 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      filename: ${{ steps.verify.outputs.filename }}
+      sha256: ${{ steps.verify.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
@@ -35,20 +39,52 @@ jobs:
       - name: Kotlin tests, APK and lint
         working-directory: android
         run: ./gradlew --no-daemon testDebugUnitTest assembleDebug lintDebug
+      - name: Verify current APK and native ride tile
+        id: verify
+        run: python3 android/scripts/verify_apk.py
       - name: Browser regression
         run: |
           npm install --prefix "$RUNNER_TEMP/fuel-browser" playwright@1.56.1
           "$RUNNER_TEMP/fuel-browser/node_modules/.bin/playwright" install --with-deps chromium
           PLAYWRIGHT_MODULE="$RUNNER_TEMP/fuel-browser/node_modules/playwright" CHROMIUM_PATH="$(node -e "process.stdout.write(require('$RUNNER_TEMP/fuel-browser/node_modules/playwright').chromium.executablePath())")" node android/tests/browser.cjs
-      - name: Checksum
-        working-directory: android/app/build/outputs/apk/debug
-        run: sha256sum app-debug.apk > app-debug.apk.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: fuel-manager-debug
           path: |
-            android/app/build/outputs/apk/debug/app-debug.apk
-            android/app/build/outputs/apk/debug/app-debug.apk.sha256
+            android/app/build/outputs/apk/debug/fuel-manager-*-debug.apk
+            android/app/build/outputs/apk/debug/fuel-manager-*-debug.apk.sha256
             android/app/build/reports/tests/testDebugUnitTest/
             android/app/build/reports/lint-results-debug.html
           retention-days: 30
+
+  direct-apk-download:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/android/native-mileage-v1'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fuel-manager-debug
+          path: dist
+      - name: Publish verified standalone Debug APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_FILENAME: ${{ needs.build.outputs.filename }}
+          APK_VERSION: ${{ needs.build.outputs.version }}
+          APK_SHA256: ${{ needs.build.outputs.sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="dist/outputs/apk/debug/$APK_FILENAME"
+          test -f "$apk"
+          (cd "$(dirname "$apk")" && sha256sum -c "$APK_FILENAME.sha256")
+          tag="android-debug-${GITHUB_SHA:0:12}"
+          printf 'Debug %s with native 骑行 Quick Settings tile. Original website unchanged.\nAPK SHA-256: %s\nRequires vivo X100 / Android 16 device acceptance; no device validation claimed. Public test signing only.\n' "$APK_VERSION" "$APK_SHA256" > "$RUNNER_TEMP/fuel-release-notes.md"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$apk" "$apk.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "$apk" "$apk.sha256" --target "$GITHUB_SHA" --prerelease --title "Fuel Manager $APK_VERSION Debug" --notes-file "$RUNNER_TEMP/fuel-release-notes.md" --repo "$GITHUB_REPOSITORY"
+          fi
+          printf 'Standalone APK: https://github.com/%s/releases/download/%s/%s\nSHA-256: %s\n' "$GITHUB_REPOSITORY" "$tag" "$APK_FILENAME" "$APK_SHA256" >> "$GITHUB_STEP_SUMMARY"
