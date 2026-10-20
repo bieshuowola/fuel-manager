@@ -19,6 +19,11 @@ jobs:
           if [ -n "$existing" ]; then
             echo "Draft or open PR already exists: #$existing" >> "$GITHUB_STEP_SUMMARY"
           else
-            pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base main --head "$GITHUB_REF_NAME" --title 'Android：原界面 GPS 临时里程与真实 ODO 校准' --body-file .github/android-pr.md)
-            printf '%s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+            if pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base main --head "$GITHUB_REF_NAME" --title 'Android：原界面 GPS 临时里程与真实 ODO 校准' --body-file .github/android-pr.md 2> "$RUNNER_TEMP/fuel-pr-create.error"); then
+              printf '%s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+            else
+              error_text=$(tr '\n' ' ' < "$RUNNER_TEMP/fuel-pr-create.error")
+              echo "::error title=Draft PR blocked::$error_text"
+              exit 1
+            fi
           fi
